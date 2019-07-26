@@ -1,0 +1,16 @@
+target/pool-chemistry.hex
+target/pool-chemistry.bin
+target/pool-chemistry.dfu
+target/pool-chemistry.elf
+target/pool-chemistry.lst
+target/pool-chemistry.map
+target/pool-chemistry.bin.crc_block
+target/pool-chemistry.bin.no_crc
+target/obj/src/module_info.o
+target/obj/src/module_info.o.d
+target/obj/src/newlib_stubs.o
+target/obj/src/newlib_stubs.o.d
+target/obj/src/user_export.o
+target/obj/src/user_export.o.d
+target/obj/src/user_module.o
+target/obj/src/user_module.o.d

@@ -6,24 +6,32 @@
 #line 1 "/Users/rhb/Development/pool-chemistry/src/pool-chemistry.ino"
 // This #include statement was automatically added by the Particle IDE.
 #include "DS18B20Minimal.h"
+#include "MQTT.h"
 
 // Change this pin to the one your D18B20 is connected too
 void disableStatusLED();
 void setup(void);
 void loop(void);
 void sampleTemperature();
-void
-maybePublish(void);
-#line 5 "/Users/rhb/Development/pool-chemistry/src/pool-chemistry.ino"
+void callback(char *topic, byte *payload, unsigned int length);
+void qoscallback(unsigned int messageid);
+void maybePublish(void);
+#line 6 "/Users/rhb/Development/pool-chemistry/src/pool-chemistry.ino"
 #define ONE_WIRE_BUS D2
 
-//SYSTEM_MODE(SEMI_AUTOMATIC);
+SYSTEM_MODE(SEMI_AUTOMATIC);
 STARTUP(System.enableFeature(FEATURE_RETAINED_MEMORY));
-retained int cachedSampleCount = 0;
-retained float lastTemperature;
+STARTUP(disableStatusLED());
 
 OneWire oneWire(ONE_WIRE_BUS);
 DS18B20 sensor(&oneWire);
+
+retained int cachedSampleCount = 0;
+retained float lastTemperature;
+
+bool messageAckd = false;
+int iterations = 0;
+bool waitingForAck = false;
 
 int ordPower = D3;
 int tdsPower = D4;
@@ -31,23 +39,20 @@ int tempPower = D5;
 int phPower = D6;
 int safeMode = D7;
 
-Timer timer(10000, sampleTemperature);
+byte myServer[] = {192, 168, 1, 125};
+MQTT client(myServer, 1883, callback);
 
 void disableStatusLED()
 {
-  RGB.control(true); 
+  RGB.control(true);
   RGB.color(0, 0, 0);
 }
-
-STARTUP(disableStatusLED());
 
 void setup(void)
 {
   Serial.begin(115200);
-  
-  //System.buttonMirror(D7, RISING);
+
   // bind following command to a pin, use a reed switch.  also bind a watchdog timer to it, and a reset counter
-  //System.enterSafeMode();
   attachInterrupt(safeMode, System.enterSafeMode, RISING);
   pinMode(safeMode, INPUT);
 
@@ -57,65 +62,128 @@ void setup(void)
 
   pinMode(tempPower, OUTPUT);
   pinMode(ordPower, OUTPUT);
-  pinMode(tdsPower, OUTPUT); 
+  pinMode(tdsPower, OUTPUT);
   pinMode(phPower, OUTPUT);
-  
+
   digitalWrite(ordPower, LOW);
   digitalWrite(tdsPower, LOW);
   digitalWrite(phPower, LOW);
 
-// timer.start();
+  Serial.printlnf("sampleCount = %d", cachedSampleCount++);
+  sampleTemperature();
+  maybePublish();
 }
 
 void loop(void)
 {
-    delay(5000);
-    sampleTemperature();
-    maybePublish();
-    Serial.printlnf("sampleCount = %d", cachedSampleCount++);
-    delay(1000); // time to write out
-//    System.sleep(SLEEP_MODE_DEEP, 5);
+  if ((++iterations == 10) || !waitingForAck || messageAckd)
+  {
+    if (client.isConnected())
+    {
+      client.disconnect();
+    }
+    WiFi.off();
+    Particle.process();
+
+    System.sleep(A3, RISING, 1);
+    System.sleep(SLEEP_MODE_DEEP, 5);
+  }
+  else
+  {
+    if (client.isConnected())
+    {
+      client.loop();
+    }
+    Particle.process();
+    // burn some time until the ack comes back
+    delay(1000);
+  }
 }
 
 void sampleTemperature()
 {
-    digitalWrite(tempPower, HIGH);
-    delay(250);  // give device time to boot up and settle
-    sensor.begin();
-    sensor.setResolution(11);
-    sensor.requestTemperatures();
+  digitalWrite(tempPower, HIGH);
+  delay(250); // give device time to boot up and settle
+  sensor.begin();
+  sensor.setResolution(11);
+  sensor.requestTemperatures();
 
-    // delay is from table 2 in https://cdn-shop.adafruit.com/datasheets/DS18B20.pdf - depends upon resolution requested
-    Serial.print("sampling temperature");
-    int count = 0;
-    while (! sensor.isConversionComplete())
+  // delay is from table 2 in https://cdn-shop.adafruit.com/datasheets/DS18B20.pdf - depends upon resolution requested
+  Serial.print("sampling temperature");
+  int count = 0;
+  while (!sensor.isConversionComplete())
+  {
+    delay(100);
+    count++;
+    Serial.print(".");
+    if (count > 10)
     {
-        delay(100);
-        count++;
-        Serial.print(".");
+      Serial.println("conversion never completed");
+      lastTemperature = 0;
+      return;
     }
+  }
 
-    Serial.println("ready to read");
-    Serial.print("Temp: ");
-    Serial.print(count);
-    Serial.print(" : ");
-    lastTemperature = sensor.getCRCTempC();
-    Serial.println(lastTemperature);
+  Serial.println("ready to read");
+  Serial.print("Temp: ");
+  Serial.print(count);
+  Serial.print(" : ");
+  lastTemperature = sensor.getCRCTempC();
+  Serial.println(lastTemperature);
 
-    digitalWrite(tempPower, LOW);
+  digitalWrite(tempPower, LOW);
 }
 
-void
-maybePublish(void)
+void callback(char *topic, byte *payload, unsigned int length)
+{
+}
+
+// QOS ack callback.
+// if application use QOS1 or QOS2, MQTT server sendback ack message id.
+void qoscallback(unsigned int messageid)
+{
+  Serial.print("Ack Message Id:");
+  Serial.println(messageid);
+  messageAckd = true;
+}
+
+void maybePublish(void)
 {
   if (cachedSampleCount % 2 == 0)
   {
     Serial.println("publishing data");
     WiFi.on();
-    Particle.publish("temperature", String(lastTemperature), PUBLIC | WITH_ACK);
-    Particle.publishVitals(particle::NOW);
+    WiFi.connect();
+
+    while (!WiFi.ready())
+    {
+      delay(250);
+    }
+
+    Serial.println("network is ready");
+
+    //Particle.process();
+    // connect to the server
+    client.connect("sparkclient");
+    Serial.println("connected to mq");
+    // add qos callback. If don't add qoscallback, ACK message from MQTT server is ignored.
+    client.addQosCallback(qoscallback);
+
+    // publish/subscribe
+    if (client.isConnected())
+    {
+      Serial.println("publishing to mq");
+      // get the messageid from parameter at 4.
+      uint16_t messageid;
+      // QOS=2
+      client.publish("outTopic/temperature", String(lastTemperature), MQTT::QOS2, &messageid);
+      Serial.println(messageid);
+      Serial.println("published!");
+      waitingForAck = true;
+    }
+
     Particle.process();
-    delay(5000);
-    WiFi.off();
+    client.loop();
+    Serial.println("done with particle.process");
   }
 }

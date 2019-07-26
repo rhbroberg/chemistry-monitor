@@ -4,7 +4,7 @@
     "files.associations": {
         "*.ino": "cpp"
     },
-    "particle.targetDevice": "3c0035000647353138383138",
+    "particle.targetDevice": "plumber_monkey",
     "particle.firmwareVersion": "1.2.1",
     "particle.targetPlatform": "photon"
 }
